@@ -3,7 +3,7 @@
     "Launch": {
       "commandName": "Executable",
       "executablePath": "$(GamePath)Renderite.Host.exe",
-      "commandLineArgs": "-Screen $(ResoniteLaunchArguments) --hookfxr-enable -DoNotAutoLoadHome",
+      "commandLineArgs": "-SkipIntroTutorial -Screen $(ResoniteLaunchArguments) -DataPath C:\\Users\\neo\\AppData\\Local\\RESO Launcher\\profiles\\bepis\\DataPath  --hookfxr-enable -DoNotAutoLoadHome",
       "workingDirectory": "$(GamePath)"
     }
   }

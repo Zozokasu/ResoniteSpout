@@ -20,20 +20,35 @@ namespace ResoniteSpoutRenderer
                 UnityEngine.Object.DestroyImmediate(obj);
         }
 
-        static CommandBuffer _commandBuffer;
+        static CommandBuffer _senderCommandBuffer;
+        static CommandBuffer _receiverCommandBuffer;
 
-        internal static void
-            IssuePluginEvent(PluginEntry.Event pluginEvent, System.IntPtr ptr)
+        // Sender用（KlakSpout_send.dll を使用）
+        internal static void IssueSenderPluginEvent(PluginEntry.Event pluginEvent, System.IntPtr ptr)
         {
-            if (_commandBuffer == null) _commandBuffer = new CommandBuffer();
+            if (_senderCommandBuffer == null) _senderCommandBuffer = new CommandBuffer();
 
-            _commandBuffer.IssuePluginEventAndData(
-                PluginEntry.GetRenderEventFunc(), (int)pluginEvent, ptr
+            _senderCommandBuffer.IssuePluginEventAndData(
+                PluginEntry.Sender_GetRenderEventFunc(), (int)pluginEvent, ptr
             );
 
-            Graphics.ExecuteCommandBuffer(_commandBuffer);
+            Graphics.ExecuteCommandBuffer(_senderCommandBuffer);
 
-            _commandBuffer.Clear();
+            _senderCommandBuffer.Clear();
+        }
+
+        // Receiver用（KlakSpout.dll を使用）
+        internal static void IssueReceiverPluginEvent(PluginEntry.Event pluginEvent, System.IntPtr ptr)
+        {
+            if (_receiverCommandBuffer == null) _receiverCommandBuffer = new CommandBuffer();
+
+            _receiverCommandBuffer.IssuePluginEventAndData(
+                PluginEntry.Receiver_GetRenderEventFunc(), (int)pluginEvent, ptr
+            );
+
+            Graphics.ExecuteCommandBuffer(_receiverCommandBuffer);
+
+            _receiverCommandBuffer.Clear();
         }
     }
 }
