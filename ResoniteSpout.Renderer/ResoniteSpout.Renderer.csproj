@@ -9,9 +9,9 @@
         <RootNamespace>ResoniteSpoutRenderer</RootNamespace>
     </PropertyGroup>
     <PropertyGroup Condition="'$(GamePath)'==''">
-        <GamePath Condition="'$(ResonitePath)' != ''">$(ResonitePath)/</GamePath>
-        <GamePath Condition="Exists('$(MSBuildProgramFiles32)\Steam\steamapps\common\Resonite\')">$(MSBuildProgramFiles32)\Steam\steamapps\common\Resonite\</GamePath>
-        <GamePath Condition="Exists('$(HOME)/.steam/steam/steamapps/common/Resonite/')">$(HOME)/.steam/steam/steamapps/common/Resonite/</GamePath>
+		<GamePath Condition="'$(ResonitePath)' != ''">$(ResonitePath)/</GamePath>
+		<GamePath Condition="Exists('$(MSBuildProgramFiles32)\Steam\steamapps\common\Resonite\')">$(MSBuildProgramFiles32)\Steam\steamapps\common\Resonite\</GamePath>
+		<GamePath Condition="Exists('$(HOME)/.steam/steam/steamapps/common/Resonite/')">$(HOME)/.steam/steam/steamapps/common/Resonite/</GamePath>
         <PluginTargetDir>$(GamePath)Renderer\BepInEx\plugins\$(AssemblyName)</PluginTargetDir>
         <CopyToPlugins>true</CopyToPlugins>
     </PropertyGroup>
@@ -70,29 +70,26 @@
     </ItemGroup>
 
     <ItemGroup>
-        <Reference Include="klakspout">
-            <HintPath>..\libs\klakspout.dll</HintPath>
-            <Private>False</Private>
-        </Reference>
-    </ItemGroup>
-
-    <ItemGroup>
         <PackageReference Include="OpenGL.Net" Version="0.8.4" />
     </ItemGroup>
 
-    <!-- ★ klakspout.dll をビルド時にコピー -->
     <ItemGroup>
-        <None Include="..\libs\KlakSpout.dll">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-            <Link>klakspout.dll</Link>
-        </None>
+      <None Update="KlakSpout.dll">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
+      <None Update="KlakSpout_send.dll">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
     </ItemGroup>
+
+    <!-- ★ klakspout.dll をビルド時にコピー -->
 
     <!-- Thunderstore 用に out フォルダにコピー -->
     <Target Name="CopyForThunderstore" AfterTargets="PostBuildEvent">
         <ItemGroup>
-            <PluginFiles Include="$(TargetPath)"/>
-            <PluginFiles Include="$(TargetDir)KlakSpout.dll"/>
+            <PluginFiles Include="$(TargetPath)" />
+			<PluginFiles Include="$(TargetDir)KlakSpout.dll" />
+			<PluginFiles Include="$(TargetDir)KlakSpout_send.dll" />
         </ItemGroup>
         <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(MSBuildThisFileDirectory)..\out\" SkipUnchangedFiles="true" />
         <Message Text="Copied $(TargetFileName) and KlakSpout.dll to ..\out\" Importance="high" />
@@ -103,7 +100,8 @@
         <ItemGroup>
             <PluginFiles Include="$(TargetPath)" />
             <PluginFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
-            <pluginFiles Include="$(TargetDir)KlakSpout.dll" />
+			<pluginFiles Include="$(TargetDir)KlakSpout.dll" />
+			<pluginFiles Include="$(TargetDir)KlakSpout_send.dll" />
         </ItemGroup>
 
         <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(PluginTargetDir)" Condition="'$(CopyToPlugins)' == 'true'" />

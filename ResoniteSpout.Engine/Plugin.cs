@@ -1,4 +1,5 @@
 ﻿using System.Reflection;
+using System.Reflection.Metadata.Ecma335;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
@@ -78,7 +79,8 @@ public static class DynamicVariableSpacePatch
 {
     // ★ DynamicVariableSpace のインスタンス → SpaceMonitor のマッピング
     private static Dictionary<DynamicVariableSpace, SpaceMonitor> _monitors = new Dictionary<DynamicVariableSpace, SpaceMonitor>();
-    
+
+    // Sender 用
     private class SpoutCameraInfo
     {
         public string SpoutName;
@@ -87,25 +89,46 @@ public static class DynamicVariableSpacePatch
         public string CameraName;
         public DynamicVariableSpace Space;  // ★ どの Space に属するか
     }
-    
+
     private static Dictionary<string, SpoutCameraInfo> spoutCameras = new Dictionary<string, SpoutCameraInfo>();
+
+    // Receiver 用
+    private class SpoutReceiverInfo
+    {
+        public string SpoutSourceName;  // 受信するSpoutソース名
+        public int AssetId;             // 書き込み先 RenderTexture の AssetId
+        public string Suffix;
+        public DynamicVariableSpace Space;
+    }
+
+    private static Dictionary<string, SpoutReceiverInfo> spoutReceivers = new Dictionary<string, SpoutReceiverInfo>();
+
+    // モードの種類
+    public enum SpaceMode
+    {
+        Sender,
+        Receiver
+    }
     
     public class SpaceMonitor
     {
         public DynamicVariableSpace Space;
         public string SpaceName;
+        public SpaceMode Mode;  // ★ Sender or Receiver
         public Dictionary<string, object> LastValues = new Dictionary<string, object>();
         private bool _isMonitoring = false;
         private string _cachedCameraName = null;
+        private string _cachedSpoutSource = null;  // ★ Receiver 用
         private HashSet<string> _ownedSpoutNames = new HashSet<string>();
-        
+
         // ★ このモニターのユニークID（ログ用）
         private string _monitorId;
 
-        public SpaceMonitor(DynamicVariableSpace space, string spaceName)
+        public SpaceMonitor(DynamicVariableSpace space, string spaceName, SpaceMode mode)
         {
             Space = space;
             SpaceName = spaceName;
+            Mode = mode;
             _monitorId = $"{spaceName}@{space.ReferenceID}";
         }
 
@@ -173,10 +196,16 @@ public static class DynamicVariableSpacePatch
                 _cachedCameraName = cameraName;
             }
 
+            // ★ Receiver 用: SpoutSource のキャッシュ
+            if (varName == "SpoutSource" && initialValue is string spoutSource)
+            {
+                _cachedSpoutSource = spoutSource;
+            }
+
             if (initialValue != null && !IsDefaultValue(initialValue, varType))
             {
                 Log.LogInfo($"[{_monitorId}] Processing initial value for '{varName}'");
-                OnVariableChanged(Space, SpaceName, varName, initialValue, _cachedCameraName, this);
+                OnVariableChanged(Space, SpaceName, varName, initialValue, _cachedCameraName, _cachedSpoutSource, Mode, this);
             }
 
             StartPolling(varName, valueProperty, valueManager);
@@ -223,6 +252,16 @@ public static class DynamicVariableSpacePatch
                             changed = true;
                         }
                     }
+                    // ★ Receiver 用: SpoutSource の変更検出
+                    else if (varName == "SpoutSource" && currentValue is string)
+                    {
+                        if (currentValue as string != lastValue as string)
+                        {
+                            _cachedSpoutSource = currentValue as string;
+                            Log.LogInfo($"[{_monitorId}] SpoutSource changed to: {_cachedSpoutSource}");
+                            changed = true;
+                        }
+                    }
                     else
                     {
                         if (currentValue == null && lastValue != null)
@@ -243,7 +282,7 @@ public static class DynamicVariableSpacePatch
                     {
                         Log.LogInfo($"[{_monitorId}] Variable '{varName}' changed");
                         LastValues[varName] = currentValue;
-                        OnVariableChanged(Space, SpaceName, varName, currentValue, _cachedCameraName, this);
+                        OnVariableChanged(Space, SpaceName, varName, currentValue, _cachedCameraName, _cachedSpoutSource, Mode, this);
                     }
                 }
                 catch (Exception ex)
@@ -288,23 +327,40 @@ public static class DynamicVariableSpacePatch
 
         public void Dispose()
         {
-            Log.LogInfo($"[{_monitorId}] Monitor disposed, cleaning up {_ownedSpoutNames.Count} Spout cameras");
-            
+            Log.LogInfo($"[{_monitorId}] Monitor disposed, cleaning up {_ownedSpoutNames.Count} Spout entries (Mode: {Mode})");
+
             foreach (var spoutName in _ownedSpoutNames.ToList())
             {
-                if (spoutCameras.ContainsKey(spoutName))
+                if (Mode == SpaceMode.Sender)
                 {
-                    var command = new SpoutCommand
+                    if (spoutCameras.ContainsKey(spoutName))
                     {
-                        Type = SpoutCommandType.Delete,
-                        SpoutName = spoutName
-                    };
-                    _messenger.SendObject("SpoutCommand", command);
-                    spoutCameras.Remove(spoutName);
-                    Log.LogInfo($"Deleted Spout camera: '{spoutName}'");
+                        var command = new SpoutCommand
+                        {
+                            Type = SpoutCommandType.Delete,
+                            SpoutName = spoutName
+                        };
+                        _messenger.SendObject("SpoutCommand", command);
+                        spoutCameras.Remove(spoutName);
+                        Log.LogInfo($"Deleted Spout camera: '{spoutName}'");
+                    }
+                }
+                else if (Mode == SpaceMode.Receiver)
+                {
+                    if (spoutReceivers.ContainsKey(spoutName))
+                    {
+                        var command = new SpoutCommand
+                        {
+                            Type = SpoutCommandType.ReceiverDelete,
+                            SpoutName = spoutName
+                        };
+                        _messenger.SendObject("SpoutCommand", command);
+                        spoutReceivers.Remove(spoutName);
+                        Log.LogInfo($"Deleted Spout receiver: '{spoutName}'");
+                    }
                 }
             }
-            
+
             _ownedSpoutNames.Clear();
             _isMonitoring = false;
             LastValues.Clear();
@@ -317,10 +373,27 @@ public static class DynamicVariableSpacePatch
     public static void UpdateName(DynamicVariableSpace __instance)
     {
         string spaceName = __instance.SpaceName.Value;
-        
-        if (!spaceName.StartsWith("ResoniteSpout."))
+
+        if(spaceName == null)
+            {
+                return;
+            }
+
+        // ★ Sender か Receiver かを判定
+        SpaceMode mode;
+        if (spaceName.StartsWith("ResoniteSpoutReceiver."))
+        {
+            mode = SpaceMode.Receiver;
+        }
+        else if (spaceName.StartsWith("ResoniteSpout."))
+        {
+            mode = SpaceMode.Sender;
+        }
+        else
+        {
             return;
-        
+        }
+
         if (!string.IsNullOrEmpty(ConfigSpacePrefix.Value))
         {
             string expectedName = TargetVariableSpaceName;
@@ -337,9 +410,9 @@ public static class DynamicVariableSpacePatch
             return;
         }
 
-        Log.LogInfo($"Target space detected: {spaceName} (ReferenceID: {__instance.ReferenceID})");
+        Log.LogInfo($"Target space detected: {spaceName} (Mode: {mode}, ReferenceID: {__instance.ReferenceID})");
 
-        var monitor = new SpaceMonitor(__instance, spaceName);
+        var monitor = new SpaceMonitor(__instance, spaceName, mode);
         _monitors[__instance] = monitor;
 
         __instance.RunInUpdates(10, () =>
@@ -354,7 +427,7 @@ public static class DynamicVariableSpacePatch
             }
         });
 
-        Log.LogInfo($"Monitoring scheduled for space: {spaceName} (ReferenceID: {__instance.ReferenceID})");
+        Log.LogInfo($"Monitoring scheduled for space: {spaceName} (Mode: {mode}, ReferenceID: {__instance.ReferenceID})");
     }
 
     [HarmonyPatch(typeof(DynamicVariableSpace), "OnDispose")]
@@ -371,44 +444,90 @@ public static class DynamicVariableSpacePatch
         }
     }
 
-    private static void OnVariableChanged(DynamicVariableSpace space, string spaceName, string varName, object value, string cameraName, SpaceMonitor monitor)
+    private static void OnVariableChanged(DynamicVariableSpace space, string spaceName, string varName, object value, string cameraName, string spoutSource, SpaceMode mode, SpaceMonitor monitor)
     {
         string monitorId = $"{spaceName}@{space.ReferenceID}";
-        Log.LogInfo($"[{monitorId}] Processing change for variable '{varName}'");
-        
-        if (varName == "TargetRTP" && value is RenderTextureProvider rtp)
+        Log.LogInfo($"[{monitorId}] Processing change for variable '{varName}' (Mode: {mode})");
+
+        if (mode == SpaceMode.Sender)
         {
-            if (rtp?.Asset != null)
+            // ★ Sender モード: TargetRTP から読み取って Spout に送信
+            if (varName == "TargetRTP" && value is RenderTextureProvider rtp)
             {
-                Log.LogInfo($"[{monitorId}] TargetRTP AssetId: {rtp.Asset.AssetId}");
-                
+                if (rtp?.Asset != null)
+                {
+                    Log.LogInfo($"[{monitorId}] TargetRTP AssetId: {rtp.Asset.AssetId}");
+
+                    string[] parts = spaceName.Split('.');
+                    if (parts.Length == 2)
+                    {
+                        string suffix = parts[1];
+                        CreateOrUpdateSpoutCamera(space, suffix, rtp.Asset.AssetId, cameraName, monitor);
+                    }
+                }
+                else
+                {
+                    Log.LogWarning($"[{monitorId}] TargetRTP has no Asset");
+                }
+            }
+            else if (varName == "CameraName")
+            {
                 string[] parts = spaceName.Split('.');
                 if (parts.Length == 2)
                 {
                     string suffix = parts[1];
-                    CreateOrUpdateSpoutCamera(space, suffix, rtp.Asset.AssetId, cameraName, monitor);
+
+                    if (_monitors.ContainsKey(space))
+                    {
+                        var mon = _monitors[space];
+                        if (mon.LastValues.ContainsKey("TargetRTP") &&
+                            mon.LastValues["TargetRTP"] is RenderTextureProvider existingRtp &&
+                            existingRtp?.Asset != null)
+                        {
+                            CreateOrUpdateSpoutCamera(space, suffix, existingRtp.Asset.AssetId, cameraName as string, mon);
+                        }
+                    }
                 }
             }
-            else
-            {
-                Log.LogWarning($"[{monitorId}] TargetRTP has no Asset");
-            }
         }
-        else if (varName == "CameraName")
+        else if (mode == SpaceMode.Receiver)
         {
-            string[] parts = spaceName.Split('.');
-            if (parts.Length == 2)
+            // ★ Receiver モード: Spout から受信して TargetRTP に書き込み
+            if (varName == "TargetRTP" && value is RenderTextureProvider rtp)
             {
-                string suffix = parts[1];
-                
-                if (_monitors.ContainsKey(space))
+                if (rtp?.Asset != null && !string.IsNullOrEmpty(spoutSource))
                 {
-                    var mon = _monitors[space];
-                    if (mon.LastValues.ContainsKey("TargetRTP") && 
-                        mon.LastValues["TargetRTP"] is RenderTextureProvider existingRtp &&
-                        existingRtp?.Asset != null)
+                    Log.LogInfo($"[{monitorId}] Receiver TargetRTP AssetId: {rtp.Asset.AssetId}, SpoutSource: {spoutSource}");
+
+                    string[] parts = spaceName.Split('.');
+                    if (parts.Length == 2)
                     {
-                        CreateOrUpdateSpoutCamera(space, suffix, existingRtp.Asset.AssetId, cameraName as string, mon);
+                        string suffix = parts[1];
+                        CreateOrUpdateSpoutReceiver(space, suffix, rtp.Asset.AssetId, spoutSource, monitor);
+                    }
+                }
+                else
+                {
+                    Log.LogWarning($"[{monitorId}] Receiver TargetRTP has no Asset or SpoutSource not set");
+                }
+            }
+            else if (varName == "SpoutSource" && value is string newSpoutSource)
+            {
+                string[] parts = spaceName.Split('.');
+                if (parts.Length == 2)
+                {
+                    string suffix = parts[1];
+
+                    if (_monitors.ContainsKey(space))
+                    {
+                        var mon = _monitors[space];
+                        if (mon.LastValues.ContainsKey("TargetRTP") &&
+                            mon.LastValues["TargetRTP"] is RenderTextureProvider existingRtp &&
+                            existingRtp?.Asset != null &&
+                            !string.IsNullOrEmpty(newSpoutSource))
+                        {
+                            CreateOrUpdateSpoutReceiver(space, suffix, existingRtp.Asset.AssetId, newSpoutSource, mon);
+                        }
                     }
                 }
             }
@@ -417,15 +536,15 @@ public static class DynamicVariableSpacePatch
 
     public static void CreateOrUpdateSpoutCamera(DynamicVariableSpace space, string suffix, int assetId, string cameraName, SpaceMonitor monitor)
     {
-        // ★ Spout 名を生成（Space の ReferenceID を含める）
+        // ★ Spout 名を生成（特殊文字を避ける）
         string spoutName;
         if (!string.IsNullOrEmpty(cameraName))
         {
-            spoutName = $"[ResoSpout] {suffix} - {cameraName}";
+            spoutName = $"ResoSpout_{suffix}_{cameraName}";
         }
         else
         {
-            spoutName = $"[ResoSpout] {suffix}";
+            spoutName = $"ResoSpout_{suffix}";
         }
         
         // ★ 同じ名前でも異なる Space の場合は別の Spout として扱う
@@ -498,6 +617,78 @@ public static class DynamicVariableSpacePatch
             _messenger.SendObject("SpoutCommand", command);
             
             Log.LogInfo($"Created Spout camera: '{spoutName}' (AssetId: {assetId})");
+        }
+    }
+
+    // ★ Receiver 用: Spout から受信して RenderTexture に書き込む設定
+    public static void CreateOrUpdateSpoutReceiver(DynamicVariableSpace space, string suffix, int assetId, string spoutSourceName, SpaceMonitor monitor)
+    {
+        // Receiver の管理キー（どの Spout ソースから受信するか）
+        string receiverKey = $"[ResoSpoutReceiver] {suffix} <- {spoutSourceName}";
+
+        var command = new SpoutCommand();
+
+        // この Space が既に同じ suffix の Receiver を持っているかチェック
+        var existingReceiver = spoutReceivers.Values.FirstOrDefault(info =>
+            info.Space == space && info.Suffix == suffix);
+
+        if (existingReceiver != null)
+        {
+            // SpoutSource 名が変わった場合は古い Receiver を削除
+            if (existingReceiver.SpoutSourceName != spoutSourceName)
+            {
+                var deleteCommand = new SpoutCommand
+                {
+                    Type = SpoutCommandType.ReceiverDelete,
+                    SpoutName = existingReceiver.SpoutSourceName
+                };
+                _messenger.SendObject("SpoutCommand", deleteCommand);
+                spoutReceivers.Remove(existingReceiver.SpoutSourceName);
+                monitor.UnregisterSpoutName(existingReceiver.SpoutSourceName);
+                Log.LogInfo($"Deleted old Spout receiver: '{existingReceiver.SpoutSourceName}'");
+            }
+            else if (existingReceiver.AssetId == assetId)
+            {
+                // SpoutSource も AssetId も同じならスキップ
+                Log.LogInfo($"Spout receiver '{spoutSourceName}' unchanged, skipping.");
+                return;
+            }
+        }
+
+        if (spoutReceivers.ContainsKey(spoutSourceName))
+        {
+            var existing = spoutReceivers[spoutSourceName];
+
+            // AssetId が変わった場合は更新
+            existing.AssetId = assetId;
+
+            command.Type = SpoutCommandType.ReceiverUpdate;
+            command.SpoutName = spoutSourceName;
+            command.AssetId = assetId;
+            _messenger.SendObject("SpoutCommand", command);
+
+            Log.LogInfo($"Updated Spout receiver: '{spoutSourceName}' (AssetId: → {assetId})");
+        }
+        else
+        {
+            // 新規作成
+            var info = new SpoutReceiverInfo
+            {
+                SpoutSourceName = spoutSourceName,
+                AssetId = assetId,
+                Suffix = suffix,
+                Space = space
+            };
+
+            spoutReceivers.Add(spoutSourceName, info);
+            monitor.RegisterSpoutName(spoutSourceName);
+
+            command.Type = SpoutCommandType.ReceiverCreate;
+            command.SpoutName = spoutSourceName;
+            command.AssetId = assetId;
+            _messenger.SendObject("SpoutCommand", command);
+
+            Log.LogInfo($"Created Spout receiver: '{spoutSourceName}' (AssetId: {assetId})");
         }
     }
 }

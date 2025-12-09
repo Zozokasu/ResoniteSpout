@@ -7,6 +7,10 @@ namespace ResoniteSpout.Shared
         Create,
         Delete,
         Update,
+        // Receiver commands
+        ReceiverCreate,
+        ReceiverDelete,
+        ReceiverUpdate,
     }
 
     public class SpoutCommand : RendererCommand
