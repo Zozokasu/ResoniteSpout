@@ -21,10 +21,11 @@ A [Resonite](https://resonite.com/) mod that enables real-time camera output str
 
 ### Basic Setup
 
+1. Open an inspector on the same slot as the `RenderTextureProvider` of your camera
 1. Create a `DynamicVariableSpace` component and name it `ResoniteSpout.YourName`
-2. Add a `DynamicValueVariable<RenderTextureProvider>` named `TargetRTP`
-3. Connect your camera's render texture to the variable
-4. The Spout sender will appear in OBS/vMix as `[ResoSpout] YourName`
+1. Add a `DynamicReferenceVariable<RenderTextureProvider>` named `TargetRTP`
+1. Connect your camera's render texture to the variable
+1. The Spout sender will appear in OBS/vMix as `[ResoSpout] YourName`
 
 ### Advanced: Custom Camera Names
 
@@ -85,7 +86,9 @@ SpacePrefix =
 
 **Camera not appearing in OBS:**
 - Verify the `DynamicVariableSpace` name starts with `ResoniteSpout.`
-- Check BepInEx logs for errors
+- Ensure the `DynamicReferenceVariable<RenderTextureProvider>` is on the same slot as the `RenderTextureProvider` itself
+- Move the `DynamicVariableSpace` to another slot and back again
+- Check BepInEx logs for errors: `BepInEx/LogOutput.log`
 - Ensure both Engine and Renderer plugins are installed
 
 **Multiple cameras conflict:**
